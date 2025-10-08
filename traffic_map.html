@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Movements and Turn Counts near King Elementary, Sept 18, 2024</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .intersection-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+        .mini-intersection {
+            border: 3px solid transparent;
+            border-radius: 1rem;
+            padding: 1rem;
+            background-color: #f9fafb; /* gray-50 */
+            cursor: pointer;
+            transition: border-color 0.3s ease, box-shadow 0.3s ease;
+        }
+        .mini-intersection.selected {
+            border-color: #3b82f6; /* blue-500 */
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+        }
+        .mini-intersection-container {
+            position: relative;
+            width: 100%;
+            padding-top: 100%; /* 1:1 Aspect Ratio */
+            overflow: hidden; /* Hide parts of roads that are inactive */
+        }
+        .road {
+            background-color: #4a5568;
+            position: absolute;
+        }
+        .road-v { width: 30%; height: 100%; left: 35%; top: 0; }
+        .road-h { width: 100%; height: 30%; top: 35%; left: 0; }
+        .center-island {
+            position: absolute;
+            width: 30%;
+            height: 30%;
+            top: 35%;
+            left: 35%;
+            background-color: #2d3748;
+        }
+
+        /* --- NEW, Clearer Physical Layout Rules --- */
+        /* For a T where the North leg is physically missing */
+        .layout-t-with-south-leg .road-v { height: 65%; top: 35%; }
+
+        /* For a T where the South leg is physically missing */
+        .layout-t-with-north-leg .road-v { height: 65%; top: 0; }
+
+        /* --- Explicit Approach Hiding Rules --- */
+        .hide-north-approach .north-approach,
+        .hide-south-approach .south-approach,
+        .hide-east-approach .east-approach,
+        .hide-west-approach .west-approach {
+            display: none;
+        }
+
+        .approach {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            z-index: 10;
+        }
+        .north-approach { bottom: 1%; left: 50%; transform: translateX(-50%); }
+        .south-approach { top: 1%; left: 50%; transform: translateX(-50%); flex-direction: row-reverse; }
+        .east-approach { left: 1%; top: 50%; transform: translateY(-50%); flex-direction: column-reverse; }
+        .west-approach { right: 1%; top: 50%; transform: translateY(-50%); flex-direction: column; }
+        .movement {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .movement .count {
+            font-weight: 700; line-height: 1; color: white; background-color: rgba(0,0,0,0.6);
+            padding: 2px 5px; border-radius: 4px; min-width: 20px; text-align: center;
+            margin-bottom: 2px; transition: font-size 0.3s ease-in-out;
+        }
+        .movement .arrow {
+            width: 16px; height: 16px;
+            transition: width 0.3s ease-in-out, height 0.3s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        <header class="mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">Movements and Turn Counts near King Elementary, Sept 18, 2024</h1>
+            <p class="text-gray-600 mt-1">15-Minute Interval Analysis</p>
+        </header>
+
+        <main>
+            <div class="mb-8 p-6 bg-white rounded-xl shadow-lg sticky top-8 z-10">
+                <div class="flex items-center gap-6">
+                    <label for="timeIntervalSlider" class="text-lg font-medium text-gray-700 whitespace-nowrap">Time Interval:</label>
+                    <input id="timeIntervalSlider" type="range" min="0" max="7" step="1" value="0" class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" disabled>
+                    <span id="timeIntervalLabel" class="text-lg font-medium text-gray-900 w-48 text-center bg-gray-100 p-2 rounded-md">Loading...</span>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-5 lg:items-start gap-8">
+                <div class="lg:col-span-3 bg-white p-6 rounded-xl shadow-lg">
+                    <h2 class="text-2xl font-semibold text-gray-800 mb-4">Live Intersection Network View</h2>
+                    <div id="intersection-grid-container" class="intersection-grid">
+                        <p class="text-gray-500">Loading intersection data...</p>
+                    </div>
+                </div>
+
+                <div class="lg:col-span-2 space-y-8 lg:sticky lg:top-8">
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h2 id="distribution-chart-title" class="text-2xl font-semibold text-gray-800 mb-4">Movement Distribution</h2>
+                        <div class="h-96"><canvas id="distributionChart"></canvas></div>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h2 class="text-2xl font-semibold text-gray-800 mb-4">Comparative Volume Over Time</h2>
+                        <div class="h-64 md:h-72"><canvas id="volumeChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- DATA CONFIGURATION ---
+            // 'layout': The physical shape of the intersection's roads.
+            // 'hiddenApproaches': The data overlays to hide due to one-way streets or other restrictions.
+            const intersectionConfig = {
+                "int1": { name: "Blue Hill Ave & Intervale St", filePath: 'data/intersection1.csv', layout: 'X', hiddenApproaches: ['west-approach'] },
+                "int2": { name: "Blue Hill Ave & Lawrence St", filePath: 'data/intersection2.csv', layout: 'X', hiddenApproaches: ['west-approach'] },
+                "int3": { name: "Blue Hill Ave & Quincy St", filePath: 'data/intersection3.csv', layout: 'X', hiddenApproaches: [] },
+                "int4": { name: "Lawrence Ave & Moscoma", filePath: 'data/intersection4.csv', layout: 'T-with-north-leg', hiddenApproaches: ['west-approach', 'south-approach'] },
+                "int5": { name: "Intervale St and Coleus Park", filePath: 'data/intersection5.csv', layout: 'T-with-north-leg', hiddenApproaches: ['west-approach', 'south-approach'] },
+            };
+
+            const allIntersectionsData = {};
+            const movementKeys = ['nb_left', 'nb_straight', 'nb_right', 'sb_left', 'sb_straight', 'sb_right', 'eb_left', 'eb_straight', 'eb_right', 'wb_left', 'wb_straight', 'wb_right'];
+            const timeIntervalSlider = document.getElementById('timeIntervalSlider');
+            const timeIntervalLabel = document.getElementById('timeIntervalLabel');
+            let distributionChart, volumeChart;
+            let selectedIntersectionId = 'int1';
+
+            async function fetchAndParseData() {
+                const errorMessages = [];
+                for (const id in intersectionConfig) {
+                    const config = intersectionConfig[id];
+                    try {
+                        const response = await fetch(config.filePath);
+                        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                        const csvText = await response.text();
+                        allIntersectionsData[id] = { ...config, data: parseTrafficCSV(csvText) };
+                    } catch (error) {
+                        console.error(`Failed to load data for ${config.name} from ${config.filePath}:`, error);
+                        errorMessages.push(`<strong>${config.name}</strong> (${config.filePath}): ${error.message}`);
+                    }
+                }
+                return errorMessages;
+            }
+
+            function parseTrafficCSV(csvText) {
+                const lines = csvText.trim().split('\n');
+                const data = [];
+                for (let i = 3; i < lines.length; i++) {
+                    const values = lines[i].split(',');
+                    if (values.length < 17) continue;
+                    data.push({
+                        time: values[0],
+                        nb_left: parseInt(values[2]) || 0, nb_straight: parseInt(values[3]) || 0, nb_right: parseInt(values[4]) || 0,
+                        sb_left: parseInt(values[6]) || 0, sb_straight: parseInt(values[7]) || 0, sb_right: parseInt(values[8]) || 0,
+                        eb_left: parseInt(values[10]) || 0, eb_straight: parseInt(values[11]) || 0, eb_right: parseInt(values[12]) || 0,
+                        wb_left: parseInt(values[14]) || 0, wb_straight: parseInt(values[15]) || 0, wb_right: parseInt(values[16]) || 0,
+                    });
+                }
+                return data;
+            }
+
+            function createIntersectionHTML(id, name, layout, hiddenApproaches = []) {
+                const layoutClass = `layout-${layout.toLowerCase()}`;
+                const hiddenClasses = hiddenApproaches.map(app => `hide-${app}`).join(' ');
+                return `
+                    <div id="${id}" class="mini-intersection ${layoutClass} ${hiddenClasses}">
+                        <h3 class="font-semibold text-center mb-2 text-gray-700">${name}</h3>
+                        <div class="mini-intersection-container">
+                            <div class="road road-v"></div><div class="road road-h"></div><div class="center-island"></div>
+                            <div class="north-approach approach">
+                                <div class="movement text-blue-400"><span id="${id}-nb-left" class="count">0</span><svg class="arrow" style="transform: scaleX(-1);"><use href="#arrow-turn"/></svg></div>
+                                <div class="movement text-green-400"><span id="${id}-nb-straight" class="count">0</span><svg class="arrow"><use href="#arrow-straight"/></svg></div>
+                                <div class="movement text-yellow-400"><span id="${id}-nb-right" class="count">0</span><svg class="arrow"><use href="#arrow-turn"/></svg></div>
+                            </div>
+                            <div class="south-approach approach">
+                                <div class="movement text-yellow-400"><span id="${id}-sb-right" class="count">0</span><svg class="arrow" style="transform: rotate(180deg);"><use href="#arrow-turn"/></svg></div>
+                                <div class="movement text-green-400"><span id="${id}-sb-straight" class="count">0</span><svg class="arrow" style="transform: rotate(180deg);"><use href="#arrow-straight"/></svg></div>
+                                <div class="movement text-blue-400"><span id="${id}-sb-left" class="count">0</span><svg class="arrow" style="transform: rotate(180deg) scaleX(-1);"><use href="#arrow-turn"/></svg></div>
+                            </div>
+                            <div class="east-approach approach">
+                                <div class="movement text-yellow-400"><span id="${id}-eb-right" class="count">0</span><svg class="arrow" style="transform: rotate(90deg);"><use href="#arrow-turn"/></svg></div>
+                                <div class="movement text-green-400"><span id="${id}-eb-straight" class="count">0</span><svg class="arrow" style="transform: rotate(90deg);"><use href="#arrow-straight"/></svg></div>
+                                <div class="movement text-blue-400"><span id="${id}-eb-left" class="count">0</span><svg class="arrow" style="transform: rotate(90deg) scaleX(-1);"><use href="#arrow-turn"/></svg></div>
+                            </div>
+                            <div class="west-approach approach">
+                                <div class="movement text-yellow-400"><span id="${id}-wb-right" class="count">0</span><svg class="arrow" style="transform: rotate(-90deg);"><use href="#arrow-turn"/></svg></div>
+                                <div class="movement text-green-400"><span id="${id}-wb-straight" class="count">0</span><svg class="arrow" style="transform: rotate(-90deg);"><use href="#arrow-straight"/></svg></div>
+                                <div class="movement text-blue-400"><span id="${id}-wb-left" class="count">0</span><svg class="arrow" style="transform: rotate(-90deg) scaleX(-1);"><use href="#arrow-turn"/></svg></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            async function init() {
+                const errors = await fetchAndParseData();
+                const gridContainer = document.getElementById('intersection-grid-container');
+
+                if (Object.keys(allIntersectionsData).length === 0) {
+                    gridContainer.innerHTML = `<p class="text-red-500 col-span-full">Could not load any intersection data. Please check file paths and server status.</p>`;
+                    return;
+                }
+                
+                let svgDefs = `<svg width="0" height="0" class="absolute"><defs><g id="arrow-straight"><path d="M12 2L12 22" stroke="currentColor" stroke-width="3" stroke-linecap="round" /><path d="M7 7L12 2L17 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" /></g><g id="arrow-turn"><path d="M5 19C5 12.3726 10.3726 7 17 7L22 7" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><path d="M17 2L22 7L17 12" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></g></defs></svg>`;
+                gridContainer.innerHTML = svgDefs;
+
+                if (errors.length > 0) {
+                    const errorHtml = `<div class="lg:col-span-full bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md mb-4" role="alert"><p class="font-bold">Data Loading Issues</p><p>Could not load files. Check that files exist and you are running a web server.</p><ul class="list-disc list-inside mt-2">${errors.map(e => `<li>${e}</li>`).join('')}</ul></div>`;
+                    gridContainer.insertAdjacentHTML('beforeend', errorHtml);
+                }
+                
+                Object.keys(allIntersectionsData).forEach(id => {
+                    const intersection = allIntersectionsData[id];
+                    gridContainer.insertAdjacentHTML('beforeend', createIntersectionHTML(id, intersection.name, intersection.layout, intersection.hiddenApproaches));
+                });
+
+                Object.keys(allIntersectionsData).forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.addEventListener('click', () => {
+                        selectedIntersectionId = id;
+                        updateDashboard(timeIntervalSlider.value);
+                    });
+                });
+                
+                const firstLoadedId = Object.keys(allIntersectionsData)[0];
+                selectedIntersectionId = firstLoadedId;
+                timeIntervalSlider.max = allIntersectionsData[firstLoadedId].data.length - 1;
+                timeIntervalSlider.disabled = false;
+                setupCharts();
+                updateDashboard(0);
+                timeIntervalSlider.addEventListener('input', (e) => updateDashboard(e.target.value));
+            }
+
+            function updateDashboard(timeIndex) {
+                if (!allIntersectionsData[selectedIntersectionId]) return;
+                timeIndex = parseInt(timeIndex);
+
+                Object.keys(allIntersectionsData).forEach(id => updateIntersectionView(id, timeIndex));
+                document.querySelectorAll('.mini-intersection').forEach(el => el.classList.remove('selected'));
+                const selectedEl = document.getElementById(selectedIntersectionId);
+                if(selectedEl) selectedEl.classList.add('selected');
+                
+                updateDistributionChart(selectedIntersectionId, timeIndex);
+                updateVolumeChartHighlight(timeIndex);
+                
+                const firstData = allIntersectionsData[Object.keys(allIntersectionsData)[0]].data;
+                if(firstData && firstData[timeIndex]) {
+                    timeIntervalLabel.textContent = firstData[timeIndex].time;
+                }
+            }
+
+            function updateIntersectionView(id, timeIndex) {
+                const intersection = allIntersectionsData[id];
+                if (!intersection || !intersection.data[timeIndex]) return;
+                const data = intersection.data[timeIndex];
+                
+                const allCounts = movementKeys.map(key => data[key] || 0);
+                const minCount = Math.min(...allCounts);
+                const maxCount = Math.max(...allCounts);
+                const countRange = maxCount - minCount;
+
+                movementKeys.forEach(key => {
+                    const countEl = document.getElementById(`${id}-${key.replace('_', '-')}`);
+                    if (countEl) {
+                        const count = data[key] || 0;
+                        countEl.textContent = count;
+                        
+                        const normalizedCount = countRange > 0 ? (count - minCount) / countRange : 0;
+                        const scaleFactor = Math.pow(normalizedCount, 1.5);
+
+                        const minFontSize = 0.6; const maxFontSize = 1.5;
+                        countEl.style.fontSize = `${minFontSize + (maxFontSize - minFontSize) * scaleFactor}rem`;
+                        
+                        const arrowEl = countEl.nextElementSibling;
+                        if(arrowEl) {
+                            const minArrowSize = 12; const maxArrowSize = 28;
+                            const arrowSize = minArrowSize + (maxArrowSize - minArrowSize) * scaleFactor;
+                            arrowEl.style.width = `${arrowSize}px`;
+                            arrowEl.style.height = `${arrowSize}px`;
+                        }
+                    }
+                });
+            }
+
+            function updateDistributionChart(intersectionId, timeIndex) {
+                const data = allIntersectionsData[intersectionId].data[timeIndex];
+                distributionChart.data.datasets[0].data = movementKeys.map(key => data[key] || 0);
+                document.getElementById('distribution-chart-title').textContent = `Distribution for ${allIntersectionsData[intersectionId].name}`;
+                distributionChart.update();
+            }
+
+            function updateVolumeChartHighlight(timeIndex) {
+                 volumeChart.update('none');
+                 const meta = volumeChart.getDatasetMeta(0);
+                 if (meta && meta.data[timeIndex]) {
+                     const activePoint = meta.data[timeIndex];
+                     volumeChart.tooltip.setActiveElements([{ datasetIndex: 0, index: timeIndex }], { x: activePoint.x, y: activePoint.y });
+                 }
+                 volumeChart.update();
+            }
+
+            function setupCharts() {
+                const movementLabels = { 'nb_left': 'NB L', 'nb_straight': 'NB S', 'nb_right': 'NB R', 'sb_left': 'SB L', 'sb_straight': 'SB S', 'sb_right': 'SB R', 'eb_left': 'EB L', 'eb_straight': 'EB S', 'eb_right': 'EB R', 'wb_left': 'WB L', 'wb_straight': 'WB S', 'wb_right': 'WB R' };
+                const colorMap = { straight: '#22c55e', left: '#3b82f6', right: '#f59e0b' };
+                
+                const distCtx = document.getElementById('distributionChart').getContext('2d');
+                distributionChart = new Chart(distCtx, {
+                    type: 'bar',
+                    data: { labels: Object.values(movementLabels), datasets: [{ data: [], backgroundColor: movementKeys.map(k => k.includes('straight') ? colorMap.straight : k.includes('left') ? colorMap.left : colorMap.right), }] },
+                    options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+                });
+
+                const volCtx = document.getElementById('volumeChart').getContext('2d');
+                const firstLoadedId = Object.keys(allIntersectionsData)[0];
+                const timeLabels = allIntersectionsData[firstLoadedId].data.map(d => d.time);
+                const intersectionColors = ['#ef4444', '#3b82f6', '#16a34a', '#f97316', '#8b5cf6'];
+                
+                const datasets = Object.keys(allIntersectionsData).map((id, index) => {
+                    const intersection = allIntersectionsData[id];
+                    const totalVolumes = intersection.data.map(interval => movementKeys.reduce((sum, key) => sum + (interval[key] || 0), 0));
+                    return {
+                        label: intersection.name,
+                        data: totalVolumes,
+                        borderColor: intersectionColors[index % intersectionColors.length],
+                        backgroundColor: intersectionColors[index % intersectionColors.length] + '33',
+                        fill: false, tension: 0.4, pointRadius: 4, pointHoverRadius: 8
+                    }
+                });
+
+                volumeChart = new Chart(volCtx, {
+                    type: 'line',
+                    data: { labels: timeLabels, datasets: datasets },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 15, padding: 20 } } }, scales: { y: { beginAtZero: true, grid: { color: '#e5e7eb' } }, x: { grid: { display: false } } } }
+                });
+            }
+            
+            init();
+        });
+    </script>
+</body>
+</html>
